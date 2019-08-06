@@ -64,7 +64,7 @@ when isMainModule:
     else: help(helpAll)
 
   if cmd notin ["init", "config"] and
-     not loadPackageFile(pkg, getPackageFile()):
+     not loadPackageFile(pkg, opts, getPackageFile()):
        fatal("This is not a nasher project. Please run nasher init.")
 
   case cmd

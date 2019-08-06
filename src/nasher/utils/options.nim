@@ -1,5 +1,5 @@
-import os, parseopt, parsecfg, streams, strformat, strtabs, strutils
-from sequtils import toSeq
+import os, parseopt, parsecfg, streams, strformat, strtabs, strutils, tables
+from sequtils import toSeq, mapIt
 from algorithm import sorted
 export strtabs
 
@@ -13,8 +13,11 @@ type
     authors*, includes*, excludes*, flags*, updated*: seq[string]
     targets*: seq[Target]
     rules*: seq[Rule]
+    depends*: Table[string, Dependency]
 
   PackageRef* = ref Package
+
+  Dependency* = tuple[name, description, path, git, branch, tag, rev: string]
 
   Target = object
     name*, file*, description*: string
@@ -148,6 +151,13 @@ proc putKeyOrHelp(opts: Options, keys: varargs[string], value: string) =
 
   opts["help"] = true
 
+proc parsePackagePath(opts: Options, s: string) =
+  let parts = s.split({'=', ':'}, maxSplit = 1).mapIt(it.strip)
+  try:
+    opts["pkg:" & parts[0]] = parts[1]
+  except IndexError:
+    fatal("No value provided for flag --pkg:" & s)
+
 proc parseCmdLine(opts: Options) =
   ## Parses the command line and stores the user input into opts.
   for kind, key, val in getopt():
@@ -157,7 +167,10 @@ proc parseCmdLine(opts: Options) =
       of "init":
         opts.putKeyOrHelp("directory", "file", key)
       of "config":
-        opts.putKeyOrHelp("key", "value", key)
+        if key.startsWith("pkg:"):
+          opts.putKeyOrHelp("key", key.escape)
+        else:
+          opts.putKeyOrHelp("key", "value", key)
       of "list":
         opts.putKeyOrHelp("target", key)
       of "compile", "convert", "pack", "install":
@@ -189,6 +202,8 @@ proc parseCmdLine(opts: Options) =
         cli.setForceAnswer(Yes)
       of "default":
         cli.setForceAnswer(Default)
+      of "pkg":
+        opts.parsePackagePath(val)
       else:
         case opts.get("command")
         of "config":
@@ -221,6 +236,11 @@ proc dumpOptions(opts: Options) =
   debug("Force:", $cli.getForceAnswer())
   stdout.write("\n")
 
+  for key, value in opts.pairs:
+    debug("Option:", key & " = " & value.escape)
+
+  stdout.write("\n")
+
 proc newOptions*(file: string): Options =
   result = newStringTable(modeStyleInsensitive)
   result.parseConfigFile(file)
@@ -236,6 +256,15 @@ proc getOptions*: Options =
   result.parseConfigFile(getConfigFile(getCurrentDir()))
   result.parseCmdLine
   result.dumpOptions
+
+proc initDependency: Dependency =
+  result.name = ""
+
+proc addDependency(pkg: PackageRef, depend: var Dependency) =
+  ## Adds ``depend`` to ``pkg``'s list of dependencies.
+  if not depend.name.isNilOrWhitespace:
+    pkg.depends[depend.name] = depend
+  depend = initDependency()
 
 proc initTarget: Target =
   result.name = ""
@@ -262,6 +291,7 @@ proc parsePackageFile(pkg: PackageRef, file: string) =
     p: CfgParser
     section, key: string
     target: Target
+    depend: Dependency
 
   open(p, fileStream, file)
   while true:
@@ -270,6 +300,7 @@ proc parsePackageFile(pkg: PackageRef, file: string) =
     of cfgEof: break
     of cfgSectionStart:
       pkg.addTarget(target)
+      pkg.addDependency(depend)
       debug("Section:", fmt"[{e.section}]")
       section = e.section.normalize
     of cfgKeyValuePair, cfgOption:
@@ -286,6 +317,17 @@ proc parsePackageFile(pkg: PackageRef, file: string) =
         of "source", "include": pkg.includes.add(e.value)
         of "exclude": pkg.excludes.add(e.value)
         of "flags": pkg.flags.add(e.value)
+        else:
+          error(fmt"Unknown key/value pair: {key} = {e.value}")
+      of "dependency":
+        case key
+        of "name": depend.name = e.value
+        of "description": depend.description = e.value
+        of "git": depend.git = e.value
+        of "branch": depend.branch = e.value
+        of "tag": depend.tag = e.value
+        of "rev": depend.rev = e.value
+        of "path": depend.path = e.value
         else:
           error(fmt"Unknown key/value pair: {key} = {e.value}")
       of "target":
@@ -305,7 +347,56 @@ proc parsePackageFile(pkg: PackageRef, file: string) =
     of cfgError:
       fatal(e.msg)
   pkg.addTarget(target)
+  pkg.addDependency(depend)
   close(p)
+
+proc resolveSource(src: string, pkg: PackageRef, opts: Options): string =
+  ## Resolves any dependency wildcards in ``src`` using values from ``opts``. If
+  ## the user has not defined a path, it will fall back to a path generated from
+  ## the dependency's URL, branch, tag, and revision. If the wildcard has not
+  ## been defined as a dependency, it will be treated as a path variable instead.
+  for dir in src.split('/'):
+    if dir.startsWith('$'):
+      let token = dir[1..^1]
+      if pkg.depends.hasKey(token):
+        let
+          depend = pkg.depends[token]
+          path = opts.get("pkg:" & token, depend.path)
+
+        if path.isNilOrWhitespace:
+          if depend.git.isNilOrWhitespace:
+            fatal(fmt"Could not resolve {dir} in {src}: dependency has no path")
+
+          let
+            git = depend.git.splitPath.tail
+            prefix =
+              if git.endswith(".git"): git[0..^5]
+              else: git
+            suffix =
+              if not depend.branch.isNilOrWhitespace: depend.branch
+              elif not depend.tag.isNilOrWhitespace: depend.tag
+              elif not depend.rev.isNilOrWhitespace: depend.rev
+              else: "master"
+
+          if result.len == 0:
+            result = ".nasher"
+
+          result = result / prefix & "-" & suffix
+        else:
+          result = result / path
+      elif existsEnv(token):
+        result = result / getEnv(token)
+      else:
+        fatal(fmt"Could not resolve {dir} in {src}: dependency not found")
+    else:
+      result = result / dir
+
+proc resolveSources(sources: var seq[string], pkg: PackageRef, opts: Options) =
+  ## Resolves each source in ``sources`` using ``resolveSource()``.
+  var result: seq[string]
+  for source in sources:
+    result.add(source.resolveSource(pkg, opts))
+  sources = result
 
 proc dumpPackage(pkg: PackageRef) =
   ## Prints the structure of pkg if debug if mode is on.
@@ -313,9 +404,7 @@ proc dumpPackage(pkg: PackageRef) =
     return
 
   stdout.write("\n")
-  debug("Beginning", "configuration dump")
-  stdout.write("\n")
-
+  debug("Dumping", "package settings")
   debug("Package:", pkg.name)
   debug("Description:", pkg.description)
   debug("Version:", pkg.version)
@@ -328,6 +417,17 @@ proc dumpPackage(pkg: PackageRef) =
   for pattern, dir in pkg.rules.items:
     debug("Rule:", fmt"{pattern} -> {dir}")
 
+  if pkg.depends.len > 0:
+    for depend in pkg.depends.values:
+      stdout.write("\n")
+      debug("Dependency:", depend.name)
+      debug("Description:", depend.description)
+      debug("Git:", depend.git)
+      debug("Tag:", depend.tag)
+      debug("Branch:", depend.branch)
+      debug("Revision:", depend.rev)
+      debug("Path:", depend.path)
+
   for target in pkg.targets:
     stdout.write("\n")
     debug("Target:", target.name)
@@ -339,11 +439,17 @@ proc dumpPackage(pkg: PackageRef) =
 
   stdout.write("\n")
 
-proc loadPackageFile*(pkg: PackageRef, file: string): bool =
+proc loadPackageFile*(pkg: PackageRef, opts: Options, file: string): bool =
   ## Initializes ``pkg`` with the contents of ``file``. Returns whether the
   ## operation was successful.
   if existsFile(file):
     pkg.parsePackageFile(file)
+    pkg.includes.resolveSources(pkg, opts)
+    pkg.excludes.resolveSources(pkg, opts)
+
+    for target in pkg.targets.mitems:
+      target.includes.resolveSources(pkg, opts)
+      target.excludes.resolveSources(pkg, opts)
     pkg.dumpPackage
     result = true
 
