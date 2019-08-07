@@ -1,5 +1,5 @@
 import os, parseopt, parsecfg, streams, strformat, strtabs, strutils, tables
-from sequtils import toSeq, mapIt
+from sequtils import toSeq
 from algorithm import sorted
 export strtabs
 
@@ -28,6 +28,10 @@ type
 const
   nasherCommands =
     ["init", "list", "config", "convert", "compile", "pack", "install", "unpack"]
+
+const prohibitedOpts =
+  ["command", "config", "level", "directory", "file", "target", "targets",
+   "help", "version"]
 
 proc `[]=`*[T: int | bool](opts: Options, key: string, value: T) =
   ## Overloaded ``[]=`` operator that converts value to a string before setting
@@ -105,10 +109,6 @@ proc parseConfigFile*(opts: Options, file: string) =
   ## Loads all all values from ``file`` into opts. This provides user-defined
   ## defaults to options. It runs before the command-line options are processed,
   ## so the user can override these commands as needed.
-  const prohibited =
-    ["command", "config", "level", "directory", "file", "target", "targets",
-     "help", "version"]
-
   let fileStream = newFileStream(file)
 
   if fileStream.isNil:
@@ -121,7 +121,7 @@ proc parseConfigFile*(opts: Options, file: string) =
     case e.kind
     of cfgEof: break
     of cfgKeyValuePair, cfgOption:
-      if e.key notin prohibited:
+      if e.key notin prohibitedOpts:
         opts[e.key] = e.value
     else: discard
   close(p)
@@ -136,7 +136,8 @@ proc writeConfigFile*(opts: Options, file: string) =
     createDir(dir)
     var s = openFileStream(file, fmWrite)
     for key in keys:
-      s.writeLine(key & " = " & opts[key].escape)
+      let keyName = if key.validIdentifier: key else: key.escape
+      s.writeLine(keyName & " = " & opts[key].escape)
     s.close
   except:
     fatal(getCurrentExceptionMsg())
@@ -151,13 +152,6 @@ proc putKeyOrHelp(opts: Options, keys: varargs[string], value: string) =
 
   opts["help"] = true
 
-proc parsePackagePath(opts: Options, s: string) =
-  let parts = s.split({'=', ':'}, maxSplit = 1).mapIt(it.strip)
-  try:
-    opts["pkg:" & parts[0]] = parts[1]
-  except IndexError:
-    fatal("No value provided for flag --pkg:" & s)
-
 proc parseCmdLine(opts: Options) =
   ## Parses the command line and stores the user input into opts.
   for kind, key, val in getopt():
@@ -167,10 +161,7 @@ proc parseCmdLine(opts: Options) =
       of "init":
         opts.putKeyOrHelp("directory", "file", key)
       of "config":
-        if key.startsWith("pkg:"):
-          opts.putKeyOrHelp("key", key.escape)
-        else:
-          opts.putKeyOrHelp("key", "value", key)
+        opts.putKeyOrHelp("key", "value", key)
       of "list":
         opts.putKeyOrHelp("target", key)
       of "compile", "convert", "pack", "install":
@@ -202,8 +193,6 @@ proc parseCmdLine(opts: Options) =
         cli.setForceAnswer(Yes)
       of "default":
         cli.setForceAnswer(Default)
-      of "pkg":
-        opts.parsePackagePath(val)
       else:
         case opts.get("command")
         of "config":
@@ -249,8 +238,6 @@ proc getOptions*: Options =
   ## Returns a string table of options obtained from the config file and command
   ## line input. Options are case and style insensitive (i.e., "someValue" ==
   ## "some_value").
-  # result = newStringTable(modeStyleInsensitive)
-  # result.parseConfigFile(getConfigFile())
   result = newStringTable(modeStyleInsensitive)
   result.parseConfigFile(getConfigFile())
   result.parseConfigFile(getConfigFile(getCurrentDir()))
@@ -350,53 +337,33 @@ proc parsePackageFile(pkg: PackageRef, file: string) =
   pkg.addDependency(depend)
   close(p)
 
-proc resolveSource(src: string, pkg: PackageRef, opts: Options): string =
-  ## Resolves any dependency wildcards in ``src`` using values from ``opts``. If
-  ## the user has not defined a path, it will fall back to a path generated from
-  ## the dependency's URL, branch, tag, and revision. If the wildcard has not
-  ## been defined as a dependency, it will be treated as a path variable instead.
-  for dir in src.split('/'):
-    if dir.startsWith('$'):
-      let token = dir[1..^1]
-      if pkg.depends.hasKey(token):
-        let
-          depend = pkg.depends[token]
-          path = opts.get("pkg:" & token, depend.path)
+proc loadDependencyPaths(pkg: PackageRef, opts: Options) =
+  ## Ensures a variable for each dependency in ``pkg`` is loaded into ``opts``.
+  try:
+    for key, depend in pkg.depends.pairs:
+      if key in prohibitedOpts:
+        fatal("Illegal dependency name " & key)
 
-        if path.isNilOrWhitespace:
-          if depend.git.isNilOrWhitespace:
-            fatal(fmt"Could not resolve {dir} in {src}: dependency has no path")
+      if not opts.hasKey(key):
+        opts[key] = if depend.path.len > 0: depend.path else: ".nasher" / key
 
-          let
-            git = depend.git.splitPath.tail
-            prefix =
-              if git.endswith(".git"): git[0..^5]
-              else: git
-            suffix =
-              if not depend.branch.isNilOrWhitespace: depend.branch
-              elif not depend.tag.isNilOrWhitespace: depend.tag
-              elif not depend.rev.isNilOrWhitespace: depend.rev
-              else: "master"
+      debug("Dependency:", key & ": " & opts[key])
+  except IndexError:
+    # There are no dependencies
+    discard
 
-          if result.len == 0:
-            result = ".nasher"
-
-          result = result / prefix & "-" & suffix
-        else:
-          result = result / path
-      elif existsEnv(token):
-        result = result / getEnv(token)
-      else:
-        fatal(fmt"Could not resolve {dir} in {src}: dependency not found")
-    else:
-      result = result / dir
-
-proc resolveSources(sources: var seq[string], pkg: PackageRef, opts: Options) =
-  ## Resolves each source in ``sources`` using ``resolveSource()``.
+proc resolveSources(sources: var seq[string], opts: Options) =
+  ## Resolves all variables in each source in ``sources`` using the values in
+  ## ``opts``.
   var result: seq[string]
-  for source in sources:
-    result.add(source.resolveSource(pkg, opts))
-  sources = result
+  for source in sources.mitems:
+    try:
+      source = source % opts
+    except ValueError:
+      let
+        msg = getCurrentExceptionMsg()
+        token = msg.split[^1]
+      fatal(fmt"Unknown dependency {token} in {source}")
 
 proc dumpPackage(pkg: PackageRef) =
   ## Prints the structure of pkg if debug if mode is on.
@@ -444,12 +411,13 @@ proc loadPackageFile*(pkg: PackageRef, opts: Options, file: string): bool =
   ## operation was successful.
   if existsFile(file):
     pkg.parsePackageFile(file)
-    pkg.includes.resolveSources(pkg, opts)
-    pkg.excludes.resolveSources(pkg, opts)
+    pkg.loadDependencyPaths(opts)
+    pkg.includes.resolveSources(opts)
+    pkg.excludes.resolveSources(opts)
 
     for target in pkg.targets.mitems:
-      target.includes.resolveSources(pkg, opts)
-      target.excludes.resolveSources(pkg, opts)
+      target.includes.resolveSources(opts)
+      target.excludes.resolveSources(opts)
     pkg.dumpPackage
     result = true
 
