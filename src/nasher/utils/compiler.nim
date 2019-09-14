@@ -29,7 +29,7 @@ proc runCompiler*(cmd: string, args: openArray[string] = []): int =
   ## Runs the nwnsc compiler and returns its error code
   result = -1
   let
-    params = args.filterIt(it.len > 0)
+    params = args.filterIt(it.len > 0).filterIt(it != "noPackNSS")
     options = {poUsePath, poStdErrToStdOut}
 
   debug("Executing", "$1 $2" % [cmd, params.join(" ")])
