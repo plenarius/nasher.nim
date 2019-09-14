@@ -208,6 +208,8 @@ Currently, the following configuration options are available:
     - default: `true`
     - note: you will want to disable this if you have some areas that are
       present in a hak or override and not the module itself.
+- `haksLocation`: the directory where the haks are located for updating the `module.ifo`.
+    - default: `null`
 
 These options are meant to be separate from the package file (`nasher.cfg`)
 since they may depend on the user.
