@@ -95,6 +95,32 @@ proc removeUnusedAreas*(dir, bin, args: string) =
   jsonToGff(fileJson, fileGff, bin, args)
   removeFile(fileJson)
 
+proc updateHaks*(dir, bin, args, haksDir: string) =
+  ## Rebuilds the hak list based on the .hak files present in the configurated `haksLocation` folder.
+  if isNilOrWhitespace haksDir:
+    return
+  let
+    fileGff = dir / "module.ifo"
+    fileJson = fileGff & ".json"
+    haks = toSeq(walkFiles(haksDir / "*.hak")).mapIt(it.splitFile.name)
+
+  if not existsFile(fileGff):
+    return
+
+  var
+    ifoJson = gffToJson(fileGff, bin, args)
+    ifoHaks: seq[JsonNode]
+
+  for hak in haks:
+    var hak_json = %* {"__struct_id": 8,"Mod_Hak": {"type": "cexostring","value": hak}}
+    ifoHaks.add(hak_json)
+    info("Adding", fmt"hak {hak.escape} to module.ifo")
+
+  ifoJson["Mod_HakList"]["value"] = %ifoHaks
+  writeFile(fileJson, $ifoJson)
+  jsonToGff(fileJson, fileGff, bin, args)
+  removeFile(fileJson)
+
 proc extractErf*(file, bin, args: string) =
   ## Extracts the erf ``file`` into the current directory.
   let

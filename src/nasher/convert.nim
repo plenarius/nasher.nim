@@ -105,5 +105,8 @@ proc convert*(opts: Options, pkg: PackageRef): bool =
   if opts.get("removeUnusedAreas", true):
     removeUnusedAreas(cacheDir, gffUtil, gffFlags)
 
+  # Update the haks in the module.ifo
+  updateHaks(cacheDir, gffUtil, gffFlags, opts.get("haksLocation"))
+
   # Prevent falling through to the next function if we were called directly
   return cmd != "convert"
