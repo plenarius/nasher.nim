@@ -130,12 +130,16 @@ proc extractErf*(file, bin, args: string) =
   if errCode != 0:
     fatal(fmt"Could not extract {file}: {output}")
 
-proc createErf*(dir, outFile, bin, args: string) =
+proc createErf*(dir, outFile, bin, args: string, packNss: bool) =
   ## Creates an erf file at ``outFile`` from all files in ``dir``, passing
   ## ``args`` to the ``nwn_erf`` utiltity.
+  var cmd: string
+  if packNss:
+      cmd = join([bin, args, "-c -f", outFile, dir / "*"], " ")
+  else:
+      cmd = join([bin, args, "-c -f", outFile, dir / "{*.ut?,*.are,*.dlg,*.fac,*.git,*.ifo,*.itp,*.jrl,*.ncs}"], " ")
+
   let
-    cmd = join([bin, args, "-c -f", outFile, dir / "{*.ut?,*.are,*.dlg,*.fac,*.git,*.ifo,*.itp,*.jrl,*.ncs}"], " ")
-    #cmd = join([bin, args, "-c -f", outFile, dir / "*"], " ")
     (output, errCode) = execCmdEx(cmd, Options)
 
   if errCode != 0:

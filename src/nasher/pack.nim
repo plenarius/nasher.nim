@@ -1,4 +1,4 @@
-import os, strformat
+import os, strformat, strutils
 from sequtils import toSeq
 
 import utils/[cli, nwn, options, shared]
@@ -69,7 +69,7 @@ proc pack*(opts: Options, pkg: PackageRef): bool =
     bin = opts.get("erfUtil", findExe("nwn_erf", root))
     args = opts.get("erfFlags")
 
-  createErf(cacheDir, file, bin, args)
+  createErf(cacheDir, file, bin, args, "noPackNSS" in opts["flags"])
   success("packed " & file)
   setLastModificationTime(file, fileTime)
 

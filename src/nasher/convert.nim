@@ -63,6 +63,7 @@ proc convert*(opts: Options, pkg: PackageRef): bool =
   # Set these so they can be gotten easily by the pack and install commands
   opts["file"] = target.file
   opts["directory"] = cacheDir
+  opts["flags"] = target.flags.join(" ")
 
   display("Updating", "cache for target " & target.name)
   if opts.get("clean", false):
